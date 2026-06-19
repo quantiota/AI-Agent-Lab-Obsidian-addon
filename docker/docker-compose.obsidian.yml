@@ -1,0 +1,41 @@
+# AI Agent Lab — Obsidian add-on (overlay)
+#
+# Apply WITHOUT editing the core compose:
+#   docker compose -f docker-compose.yaml -f docker-compose.obsidian.yml up -d
+#
+# Adds the `obsidian` service (linuxserver KasmVNC desktop, streamed to the
+# browser) and renders an extra nginx vhost (obsidian.conf) alongside the core
+# default.conf — no core files are overwritten. The vault is the lab's existing
+# ../notebooks folder, so the Claude agent in code-server edits the same notes.
+
+services:
+  obsidian:
+    image: lscr.io/linuxserver/obsidian:latest
+    security_opt:
+      - seccomp:unconfined        # Electron/Chromium sandbox in KasmVNC
+    shm_size: "1gb"               # Chromium needs shared memory
+    environment:
+      - PUID=1000                 # match the code-server `coder` user so vault files are shared cleanly
+      - PGID=1000
+      - TZ=UTC
+      # No KasmVNC password: access is gated by Authelia SSO at the nginx vhost,
+      # the same login as the rest of the lab (see obsidian.conf.template).
+    volumes:
+      - obsidian-config:/config
+      - ../notebooks:/config/vault          # SAME host folder code-server mounts → shared vault
+
+  # Extend nginx: mount the obsidian vhost template and render it next to default.conf.
+  # `volumes` and `depends_on` merge with the core service; `command` is replaced
+  # (it now renders BOTH templates, then starts nginx).
+  nginx:
+    volumes:
+      - ./nginx/conf.d/obsidian.conf.template:/etc/nginx/conf.d/obsidian.conf.template
+    command: >
+      /bin/bash -c "envsubst '$$DOMAIN' < /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf
+      && envsubst '$$DOMAIN' < /etc/nginx/conf.d/obsidian.conf.template > /etc/nginx/conf.d/obsidian.conf
+      && exec nginx -g 'daemon off;'"
+    depends_on:
+      - obsidian
+
+volumes:
+  obsidian-config:

@@ -1,0 +1,60 @@
+# AI Agent Lab — Obsidian add-on nginx vhost (rendered to obsidian.conf by the
+# docker-compose.obsidian.yml command via `envsubst '$DOMAIN'`).
+# Self-contained: its own :80 redirect + ACME location and :443 proxy.
+# Gated by Authelia SSO using the lab's shared snippets — same as the core services.
+
+# HTTP → HTTPS redirect for the obsidian subdomain (+ Let's Encrypt http-01).
+server {
+    listen 80;
+    server_name obsidian.${DOMAIN};
+
+    location / {
+        return 302 https://$host$request_uri;
+    }
+    location ~ /.well-known {
+        root /usr/share/nginx/html;
+        allow all;
+    }
+}
+
+# HTTPS — proxy to the Obsidian KasmVNC desktop on :3000 (WebSocket stream).
+server {
+    listen 443 ssl;
+    server_name obsidian.${DOMAIN};
+
+    ssl_certificate /etc/letsencrypt/live/obsidian.${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/obsidian.${DOMAIN}/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_dhparam /etc/ssl/certs/dhparam.pem;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSLObsidian:10m;
+    add_header Strict-Transport-Security max-age=15768000;
+
+    # Authelia forward-auth (SSO) — shared lab snippets (mounted by core nginx).
+    include /etc/nginx/snippets/authelia-location.conf;
+
+    location / {
+        include /etc/nginx/snippets/authelia-authrequest.conf;
+
+        proxy_pass http://obsidian:3000;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # KasmVNC streams the desktop over WebSocket.
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 3600s;     # keep the desktop session alive while idle
+        proxy_buffering off;
+    }
+
+    location ~ /.well-known {
+        allow all;
+    }
+}
